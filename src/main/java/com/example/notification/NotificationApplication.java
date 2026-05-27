@@ -1,0 +1,16 @@
+package com.example.notification;
+
+import com.example.notification.config.DeliveryProperties;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@EnableScheduling
+@SpringBootApplication
+@EnableConfigurationProperties(DeliveryProperties.class)
+public class NotificationApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(NotificationApplication.class, args);
+    }
+}

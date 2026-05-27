@@ -1,5 +1,6 @@
 .gradle/
 build/
+.codex-build/
 out/
 data/
 *.log

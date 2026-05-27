@@ -2,21 +2,15 @@
 
 ## 1. 问题理解
 
-企业内部多个业务系统会在关键事件发生后，需要调用外部供应商的 HTTP(S) API 完成通知，例如：
+因此，本系统的核心目标是提供一个内部的异步通知投递服务：
 
-- 用户注册成功后通知广告系统。
-- 用户订阅付款成功后通知 CRM。
-- 用户购买商品后通知库存系统。
+1. **业务能力**：接收业务系统提交的通知任务。
+2. **可回滚**：持久化通知任务，避免请求在服务重启或短暂故障时丢失。
+3. **并发**：后台异步投递 HTTP 请求。
+4. **稳定性**：对失败请求进行有限重试。
+5. **日志**：记录任务状态，便于排查和人工处理。
 
-这些外部 API 的地址、Header、Body 格式都不相同。业务系统本身不关心外部 API 的业务返回值，只希望“通知请求能够尽可能稳定、可靠地送达”。
-
-因此，本系统的核心目标不是把外部 API 调用包装成同步 RPC，而是提供一个内部的异步通知投递服务：
-
-1. 接收业务系统提交的通知任务。
-2. 持久化通知任务，避免请求在服务重启或短暂故障时丢失。
-3. 后台异步投递 HTTP 请求。
-4. 对失败请求进行有限重试。
-5. 记录任务状态，便于排查和人工处理。
+本系统不是传统 API Gateway。API Gateway 更关注同步请求代理、鉴权、限流和路由，而本系统更关注异步通知投递的可靠性。它接收业务系统提交的外部 HTTP 通知任务，将任务持久化后由后台 Worker 异步投递，并通过重试机制提升送达成功率。
 
 ## 2. 系统边界
 
@@ -41,7 +35,7 @@
 - 不实现 exactly-once 投递。
   - 原因：HTTP 调用天然难以做到严格 exactly-once。请求可能已经到达外部系统，但内部服务在读取响应前超时。强行追求 exactly-once 会显著增加复杂度，并且需要外部系统配合幂等。
 - 不在 MVP 中引入 Kafka、RabbitMQ、分布式调度等大型基础设施。
-  - 原因：作业规模有限，先用本地持久化任务文件和后台 worker 就能表达核心设计。未来流量上来后再演进到数据库或消息队列。
+  - 原因：作业规模有限，先用 MySQL 任务表和后台 worker 就能表达核心设计。未来流量上来后再演进到消息队列。
 
 ## 3. 核心设计
 
@@ -178,56 +172,92 @@ MVP 是单进程 Worker，不需要处理多个进程同时抢同一任务的问
 - 更新条件中带上原始状态，确保只有一个 Worker 成功抢到任务。
 - 如果服务在 `processing` 状态中崩溃，可以通过 `updated_at` 超时扫描，把卡住的任务重新置为 `pending`。
 
-## 5. Java MVP 实现
+## 5. Spring Boot + MySQL MVP 实现
 
-本仓库实现了一个纯 Java 标准库版本的 MVP，不依赖 Spring、Maven、Gradle 或第三方库。
+本仓库实现了一个 Spring Boot + MySQL 版本的 MVP。相比最小纯 Java 实现，这一版更贴近真实后端工程：用 REST API 接收通知任务，用 MySQL 持久化任务状态，用 Spring 定时任务作为后台 Worker 异步投递。
 
 技术选择：
 
-- 语言：Java。
-- HTTP 服务：JDK 自带 `com.sun.net.httpserver.HttpServer`。
-- HTTP 客户端：JDK 自带 `java.net.http.HttpClient`。
-- 存储：本地 JSON 文件 `data/notifications.json`。
-- 后台任务：进程内 Worker 循环扫描到期任务。
-- JSON：项目内实现了一个轻量 JSON parser / serializer，只覆盖本作业需要的 JSON 对象、数组、字符串、数字、布尔值和 null。
+- 语言：Java 21。
+- 框架：Spring Boot 3.5.x。
+- Web：Spring MVC。
+- 存储：MySQL。
+- ORM：Spring Data JPA / Hibernate。
+- HTTP 客户端：`RestTemplate`。
+- 后台任务：Spring `@Scheduled` 定时扫描到期任务。
+- 构建工具：Gradle。
 
-选择纯 Java 的原因：
+选择 Spring Boot + MySQL 的原因：
 
-- 当前作业重点是可靠投递的工程设计，不是框架能力展示。
-- 无外部依赖，评审者只需要 JDK 即可编译运行。
-- 任务持久化、状态流转、HTTP 投递、失败重试等核心逻辑都能完整表达。
-- 后续迁移到 Spring Boot、PostgreSQL 或消息队列时，核心模型不需要推翻。
+- Spring Boot 是 Java 后端常见生产技术栈，便于展示真实工程结构。
+- MySQL 能表达任务持久化、状态流转、索引和后续水平扩展的基础。
+- JPA 可以减少样板 SQL，让代码重点放在业务状态机和失败处理上。
+- Gradle 便于 IDEA 导入、构建和运行。
 
 项目结构：
 
 ```text
 .
 ├── README.md
+├── build.gradle
+├── settings.gradle
 ├── scripts/
 │   ├── compile.ps1
 │   └── run.ps1
+├── src/main/resources/
+│   ├── application.yml
+│   ├── application-example.yml
+│   └── schema.sql
 └── src/
     └── main/
         └── java/
             └── com/
                 └── example/
                     └── notification/
-                        ├── Main.java
-                        ├── NotificationServer.java
-                        ├── DeliveryWorker.java
-                        ├── DeliveryClient.java
-                        ├── TaskRepository.java
-                        ├── NotificationTask.java
-                        ├── TaskStatus.java
-                        ├── DeliveryResult.java
-                        └── Json.java
+                        ├── NotificationApplication.java
+                        ├── api/
+                        ├── config/
+                        ├── domain/
+                        ├── repository/
+                        ├── service/
+                        └── worker/
 ```
 
 ### 5.1 运行方式
 
-需要本机安装 JDK 17 或更高版本，并确保 `java`、`javac` 在 PATH 中。
+需要本机安装并配置：
 
-编译：
+- JDK 21。
+- Gradle。
+- MySQL 8.x。
+
+创建数据库：
+
+```sql
+create database notification_service
+  default character set utf8mb4
+  collate utf8mb4_unicode_ci;
+```
+
+配置数据库连接：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/notification_service?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: root
+    password: root
+```
+
+默认配置在 `src/main/resources/application.yml`。如果本地 MySQL 密码不同，可以修改该文件，也可以通过环境变量覆盖：
+
+```powershell
+$env:MYSQL_URL="jdbc:mysql://localhost:3306/notification_service?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+$env:MYSQL_USER="root"
+$env:MYSQL_PASSWORD="your_password"
+```
+
+构建：
 
 ```powershell
 .\scripts\compile.ps1
@@ -245,11 +275,11 @@ MVP 是单进程 Worker，不需要处理多个进程同时抢同一任务的问
 powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
 ```
 
-也可以使用 Gradle：
+也可以直接使用 Gradle：
 
 ```powershell
 gradle build
-gradle run
+gradle bootRun
 ```
 
 默认启动地址：
@@ -258,10 +288,7 @@ gradle run
 http://localhost:8080
 ```
 
-可通过环境变量调整：
-
-- `PORT`：服务端口，默认 `8080`。
-- `DATA_FILE`：任务持久化文件，默认 `data/notifications.json`。
+启动后 Hibernate 会根据实体自动创建或更新 `notification_tasks` 表。仓库中也提供了 `src/main/resources/schema.sql`，便于人工查看表结构。
 
 ### 5.2 接口示例
 
@@ -333,7 +360,7 @@ POST /notifications/{notification_id}/retry
 - 消息重复消费处理。
 - 本地开发和评审成本。
 
-本作业更关注设计判断。第一版使用本地 JSON 文件足以展示任务持久化、状态流转和失败重试。后续如果吞吐量、延迟或水平扩展需求上升，再引入数据库或消息队列更合理。
+本作业更关注设计判断。第一版使用 MySQL 任务表足以覆盖可靠投递的主要问题。后续如果吞吐量、延迟或水平扩展需求上升，再引入消息队列更合理。
 
 ### 6.3 为什么不追求 exactly-once
 
@@ -350,8 +377,8 @@ HTTP 投递无法单方面保证 exactly-once。典型问题是：
 
 如果系统流量或复杂度明显增长，可以按阶段演进：
 
-1. 存储从本地 JSON 文件升级到 PostgreSQL。
-2. Worker 从单进程升级到多实例，并使用数据库行锁或队列保证并发安全。
+1. 存储从单库 MySQL 升级为主从、分库或 PostgreSQL 等更适合团队基础设施的方案。
+2. Worker 从单实例升级到多实例，并使用数据库行锁、`skip locked` 或队列保证并发安全。
 3. 引入消息队列，例如 RabbitMQ、Kafka、SQS，用于削峰和水平扩展。
 4. 增加死信队列和人工重放后台。
 5. 增加供应商配置中心，支持不同供应商的重试策略、超时时间、鉴权方式和签名规则。
@@ -370,7 +397,7 @@ HTTP 投递无法单方面保证 exactly-once。典型问题是：
 ### 8.2 AI 曾给出但未采纳的方向
 
 - 没有采纳一开始就使用 Kafka / RabbitMQ 的重型方案。
-  - 原因：本作业建议投入时间不超过 4 小时，第一版使用本地持久化任务文件更能体现核心逻辑，复杂中间件会分散重点。
+  - 原因：本作业建议投入时间不超过 4 小时，第一版使用 MySQL 任务表更能体现核心逻辑，复杂中间件会分散重点。
 - 没有采纳 exactly-once 的投递目标。
   - 原因：HTTP 通知场景中 exactly-once 需要外部系统配合幂等和事务语义，单靠通知服务无法可靠保证。
 - 没有采纳复杂的供应商适配 DSL 或插件系统。
@@ -380,8 +407,8 @@ HTTP 投递无法单方面保证 exactly-once。典型问题是：
 
 - 选择至少一次投递语义。
   - 原因：通知类系统更怕漏投，重复投递可以通过幂等键降低影响。
-- 选择本地 JSON 文件作为 MVP 的可靠性基础。
-  - 原因：实现简单、可解释、易评审，能够覆盖任务持久化和失败重试。
+- 选择 MySQL 任务表作为 MVP 的可靠性基础。
+  - 原因：Java 后端项目中常见、可解释、易评审，能够覆盖任务持久化、状态流转和失败重试。
 - 选择有限重试加失败落库，而不是无限重试。
   - 原因：外部系统长期不可用时，无限重试会持续占用资源，也不利于问题定位。
 - 将业务系统与外部 API 返回值解耦。

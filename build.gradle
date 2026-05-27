@@ -1,9 +1,13 @@
 plugins {
-    id "application"
+    id "java"
+    id "org.springframework.boot" version "3.5.14"
+    id "io.spring.dependency-management" version "1.1.7"
 }
 
 group = "com.example"
 version = "0.1.0"
+
+layout.buildDirectory = file(".codex-build")
 
 java {
     toolchain {
@@ -11,10 +15,19 @@ java {
     }
 }
 
-application {
-    mainClass = "com.example.notification.Main"
-}
-
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
+}
+
+dependencies {
+    implementation "org.springframework.boot:spring-boot-starter-web"
+    implementation "org.springframework.boot:spring-boot-starter-data-jpa"
+    implementation "org.springframework.boot:spring-boot-starter-validation"
+    runtimeOnly "com.mysql:mysql-connector-j"
+
+    testImplementation "org.springframework.boot:spring-boot-starter-test"
+}
+
+tasks.named("test") {
+    useJUnitPlatform()
 }

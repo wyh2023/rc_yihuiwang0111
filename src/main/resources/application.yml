@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/notification_service?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:root}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+notification:
+  worker:
+    fixed-delay-ms: 2000
+  delivery:
+    connect-timeout: 5s
+    read-timeout: 10s
+    processing-timeout: 5m
+    batch-size: 10

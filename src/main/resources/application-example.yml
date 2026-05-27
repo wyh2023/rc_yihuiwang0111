@@ -3,3 +3,9 @@ spring:
     url: jdbc:mysql://localhost:3306/notification_service?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
     username: root
     password: your_password
+
+notification:
+  delivery:
+    pool-core-size: 4
+    pool-max-size: 8
+    pool-queue-capacity: 100

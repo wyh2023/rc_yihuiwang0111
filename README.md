@@ -377,14 +377,15 @@ HTTP 投递无法单方面保证 exactly-once。典型问题是：
 
 如果系统流量或复杂度明显增长，可以按阶段演进：
 
-1. 存储从单库 MySQL 升级为主从、分库或 PostgreSQL 等更适合团队基础设施的方案。
-2. Worker 从单实例升级到多实例，并使用数据库行锁、`skip locked` 或队列保证并发安全。
-3. 引入消息队列，例如 RabbitMQ、Kafka、SQS，用于削峰和水平扩展。
-4. 增加死信队列和人工重放后台。
-5. 增加供应商配置中心，支持不同供应商的重试策略、超时时间、鉴权方式和签名规则。
-6. 增加投递观测能力，包括成功率、失败率、重试次数、供应商维度延迟和告警。
-7. 增加幂等键规范，要求业务系统提交 `event_id`，并在投递时透传给外部系统。
-8. 增加限流和熔断，避免外部系统故障时被重试流量进一步打垮。
+1. **分库分表，避免单点故障**：存储从单库 MySQL 升级为主从、分库或 PostgreSQL 等更适合团队基础设施的方案。
+2. **并发安全**：Worker 从单实例升级到多实例，并使用数据库行锁、`skip locked` 或队列保证并发安全。
+3. **通知鉴权**：避免非认证用户发送高危消息；
+4. 引入消息队列，例如 RabbitMQ、Kafka、SQS，用于削峰和水平扩展。
+5. **稳定性**：增加死信队列和人工重放后台。
+6. 增加供应商配置中心，支持不同供应商的重试策略、超时时间、鉴权方式和签名规则。
+7. 增加投递观测能力，包括成功率、失败率、重试次数、供应商维度延迟和告警。
+8. 增加幂等键规范，要求业务系统提交 `event_id`，并在投递时透传给外部系统。
+9. 增加限流和熔断，避免外部系统故障时被重试流量进一步打垮。
 
 ## 8. AI 使用说明
 
@@ -396,15 +397,41 @@ HTTP 投递无法单方面保证 exactly-once。典型问题是：
 
 ### 8.2 AI 曾给出但未采纳的方向
 
-- 没有采纳一开始就使用 Kafka / RabbitMQ 的重型方案。
-  - 原因：本作业建议投入时间不超过 4 小时，第一版使用 MySQL 任务表更能体现核心逻辑，复杂中间件会分散重点。
-- 没有采纳 exactly-once 的投递目标。
-  - 原因：HTTP 通知场景中 exactly-once 需要外部系统配合幂等和事务语义，单靠通知服务无法可靠保证。
-- 没有采纳复杂的供应商适配 DSL 或插件系统。
-  - 原因：第一版主要解决可靠投递，不应该提前设计过重的抽象。
+- 关于调度的设计：
+
+  ```JAVA
+      @Scheduled(fixedDelayString = "${notification.worker.fixed-delay-ms:2000}")
+      public void deliverDueNotifications() {
+          List<NotificationTask> tasks = notificationService.claimDueTasks();
+          for (NotificationTask task : tasks) {
+              DeliveryResult result = deliveryService.deliver(task);
+              if (result.success()) {
+                  notificationService.markSuccess(task.getId());
+                  log.info("Delivered notification {}: {}", task.getId(), result.message());
+              } else {
+                  notificationService.markFailure(task.getId(), result);
+                  log.warn("Delivery failed for notification {}: {}", task.getId(), result.message());
+              }
+          }
+      }
+  ```
+
+  原本逻辑中的语义是整个任务执行完后，执行下一个线程的任务，虽然引入多线程，但本质仍然在单线程执行任务。
+
+- 将同步操作（日志、业务逻辑）包装在一次请求处理中，线程调度器可以一次执行所有的同步操作，而非单纯的转发操作。提高可扩展性。
 
 ### 8.3 我自己做出的关键决策
 
+- 并发选择，结合消息队列和：
+  - 系统收到通知请求
+  2. 校验请求参数
+  3. 将完整请求持久化到 DB，生成 requestId / notificationId
+  4. 向消息队列发送 requestId
+  5. Worker 从消息队列消费 requestId
+  6. Worker 根据 requestId 查询 DB 中的完整通知内容
+  7. Worker 将投递任务交给线程池执行 HTTP 请求
+  8. 根据投递结果更新 DB 状态
+  9. 成功后 ack 消息；失败则重试或进入失败状态
 - 选择至少一次投递语义。
   - 原因：通知类系统更怕漏投，重复投递可以通过幂等键降低影响。
 - 选择 MySQL 任务表作为 MVP 的可靠性基础。

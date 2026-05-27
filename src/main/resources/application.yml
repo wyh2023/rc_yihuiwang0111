@@ -24,3 +24,6 @@ notification:
     read-timeout: 10s
     processing-timeout: 5m
     batch-size: 10
+    pool-core-size: 4
+    pool-max-size: 8
+    pool-queue-capacity: 100
